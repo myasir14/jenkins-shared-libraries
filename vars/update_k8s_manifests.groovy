@@ -1,55 +1,50 @@
-#!/usr/bin/env groovy
-
-/**
- * Update Kubernetes manifests with new image tags
- */
 def call(Map config = [:]) {
-    def imageTag = config.imageTag ?: error("Image tag is required")
-    def manifestsPath = config.manifestsPath ?: 'kubernetes'
-    def gitCredentials = config.gitCredentials ?: 'github-credentials'
-    def gitUserName = config.gitUserName ?: 'myasir14'
-    def gitUserEmail = config.gitUserEmail ?: 'myaaaasir@gmail.com'
+    def generateReports = config.generateReports ?: true
+    def archiveResults = config.archiveResults ?: true
     
-    echo "Updating Kubernetes manifests with image tag: ${imageTag}"
+    echo "Running E-commerce App Tests..."
     
-    withCredentials([usernamePassword(
-        credentialsId: gitCredentials,
-        usernameVariable: 'GIT_USERNAME',
-        passwordVariable: 'GIT_PASSWORD'
-    )]) {
-        // Configure Git
-        sh """
-            git config user.name "${gitUserName}"
-            git config user.email "${gitUserEmail}"
-        """
+    try {
+        // Install dependencies first
+        sh '''
+            npm install
+            
+            # Run the test suites
+            npm run test:unit
+            npm run test:integration
+            npm run test:a11y
+            
+            # Generate coverage report
+            npm run test:coverage
+        '''
         
-        // Update deployment manifests with new image tags - using proper Linux sed syntax
-        sh """
-            # Update main application deployment - note the correct image name is trainwithshubham/easyshop-app
-            sed -i "s|image: yasir261/easyshop-app:.*|image: yasir261/easyshop-app:${imageTag}|g" ${manifestsPath}/08-easyshop-deployment.yaml
+        if (generateReports) {
+            // Publish test results if junit reports exist
+            if (fileExists('**/junit.xml')) {
+                junit '**/junit.xml'
+            }
             
-            # Update migration job if it exists
-            if [ -f "${manifestsPath}/12-migration-job.yaml" ]; then
-                sed -i "s|image: yasir261/easyshop-migration:.*|image: yasir261/easyshop-migration:${imageTag}|g" ${manifestsPath}/12-migration-job.yaml
-            fi
-            
-            # Ensure ingress is using the correct domain
-            if [ -f "${manifestsPath}/10-ingress.yaml" ]; then
-                sed -i "s|host: .*|host: easyshop.letsdeployit.com|g" ${manifestsPath}/10-ingress.yaml
-            fi
-            
-            # Check for changes
-            if git diff --quiet; then
-                echo "No changes to commit"
-            else
-                # Commit and push changes
-                git add ${manifestsPath}/*.yaml
-                git commit -m "Update image tags to ${imageTag} and ensure correct domain [ci skip]"
-                
-                # Set up credentials for push
-                git remote set-url origin https://\${GIT_USERNAME}:\${GIT_PASSWORD}@github.com/myasir14/tws-e-commerce-app.git
-                git push origin HEAD:\${GIT_BRANCH}
-            fi
-        """
+            // Publish coverage report if it exists
+            if (fileExists('coverage/index.html')) {
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'coverage',
+                    reportFiles: 'index.html',
+                    reportName: 'Coverage Report',
+                    reportTitles: ''
+                ])
+            }
+        }
+        
+        if (archiveResults) {
+            // Archive test artifacts
+            archiveArtifacts artifacts: 'coverage/**/*', fingerprint: true, allowEmptyArchive: true
+        }
+        
+    } catch (Exception e) {
+        currentBuild.result = 'FAILURE'
+        error "Test execution failed: ${e.message}"
     }
 }
